@@ -1,6 +1,5 @@
 const { WebSocketServer, WebSocket } = require('ws');
 const { v4: uuidv4 } = require('uuid');
-const os = require('os');
 
 const DEFAULT_PORT = 9876;
 
@@ -37,7 +36,7 @@ class SyncServer {
 
   _handleConnection(ws) {
     const clientId = uuidv4();
-    const clientInfo = { ws, id: clientId, deviceId: null };
+    const clientInfo = { ws, id: clientId, deviceId: null, deviceName: null };
 
     ws.on('message', (raw) => {
       try {
@@ -67,26 +66,65 @@ class SyncServer {
     this.clients.set(clientId, clientInfo);
   }
 
-  broadcast(message, targetDeviceIds = null) {
-    const payload = JSON.stringify(message);
+  getConnectedDevices() {
+    const result = [];
     for (const [, client] of this.clients) {
-      if (!client.deviceId) continue;
-      if (targetDeviceIds && !targetDeviceIds.includes(client.deviceId)) continue;
-      if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(payload);
+      if (client.deviceId && client.ws.readyState === WebSocket.OPEN) {
+        result.push({ deviceId: client.deviceId, deviceName: client.deviceName });
       }
     }
+    return result;
+  }
+
+  broadcast(message, targetDeviceIds = null) {
+    const payload = JSON.stringify(message);
+    const results = [];
+
+    for (const [, client] of this.clients) {
+      if (!client.deviceId) continue;
+      const isInTarget = !targetDeviceIds || targetDeviceIds.includes(client.deviceId);
+      if (!isInTarget) continue;
+
+      if (client.ws.readyState === WebSocket.OPEN) {
+        try {
+          client.ws.send(payload);
+          results.push({ deviceId: client.deviceId, deviceName: client.deviceName, sent: true });
+        } catch (e) {
+          results.push({ deviceId: client.deviceId, deviceName: client.deviceName, sent: false, reason: e.message });
+        }
+      } else {
+        results.push({ deviceId: client.deviceId, deviceName: client.deviceName, sent: false, reason: '连接未就绪' });
+      }
+    }
+
+    if (targetDeviceIds) {
+      for (const tid of targetDeviceIds) {
+        if (!results.some(r => r.deviceId === tid)) {
+          results.push({ deviceId: tid, deviceName: null, sent: false, reason: '设备未连接' });
+        }
+      }
+    }
+
+    return results;
   }
 
   sendToDevice(deviceId, message) {
     const payload = JSON.stringify(message);
     for (const [, client] of this.clients) {
-      if (client.deviceId === deviceId && client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(payload);
-        return true;
+      if (client.deviceId === deviceId) {
+        if (client.ws.readyState === WebSocket.OPEN) {
+          try {
+            client.ws.send(payload);
+            return { deviceId, deviceName: client.deviceName, sent: true };
+          } catch (e) {
+            return { deviceId, deviceName: client.deviceName, sent: false, reason: e.message };
+          }
+        } else {
+          return { deviceId, deviceName: client.deviceName, sent: false, reason: '连接未就绪' };
+        }
       }
     }
-    return false;
+    return { deviceId, deviceName: null, sent: false, reason: '设备未连接' };
   }
 
   stop() {

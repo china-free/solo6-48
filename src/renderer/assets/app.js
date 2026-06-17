@@ -3,6 +3,7 @@ const { clipSync } = window;
 let devices = [];
 let history = [];
 let selectedTargets = new Set();
+let expandedItems = new Set();
 let isReady = false;
 
 function $(sel) { return document.querySelector(sel); }
@@ -179,6 +180,62 @@ function renderDevices() {
   `).join('');
 }
 
+function _statusLabel(status) {
+  switch (status) {
+    case 'sent': return '已发送';
+    case 'delivered': return '已送达';
+    case 'failed': return '失败';
+    default: return status || '未知';
+  }
+}
+
+function _renderSentTargets(item) {
+  const targets = item.targets || [];
+  if (targets.length === 0) return '';
+
+  const sentCount = targets.filter(t => t.status === 'sent').length;
+  const deliveredCount = targets.filter(t => t.status === 'delivered').length;
+  const failedCount = targets.filter(t => t.status === 'failed').length;
+
+  const tagsHtml = targets.map(t => `
+    <span class="delivery-tag status-${t.status}" title="${t.reason || ''}">
+      <span class="delivery-dot"></span>
+      ${escapeHtml(t.deviceName || t.deviceId.slice(0, 8))}
+      ${_statusLabel(t.status)}
+    </span>
+  `).join('');
+
+  const failedTargets = targets.filter(t => t.status === 'failed' && t.reason);
+  const reasonsHtml = failedTargets.map(t => `
+    <div class="delivery-reason">${escapeHtml(t.deviceName || t.deviceId.slice(0, 8))}: ${escapeHtml(t.reason)}</div>
+  `).join('');
+
+  const summaryHtml = `
+    <div class="delivery-summary">
+      ${deliveredCount > 0 ? `<span><span class="delivery-dot" style="background:var(--green)"></span>${deliveredCount} 送达</span>` : ''}
+      ${sentCount > 0 ? `<span><span class="delivery-dot" style="background:var(--accent)"></span>${sentCount} 已发</span>` : ''}
+      ${failedCount > 0 ? `<span><span class="delivery-dot" style="background:var(--red)"></span>${failedCount} 失败</span>` : ''}
+    </div>
+  `;
+
+  return `
+    <div class="delivery-tags">${tagsHtml}</div>
+    ${reasonsHtml}
+    ${summaryHtml}
+  `;
+}
+
+function _renderReceivedStatus(item) {
+  const status = item.status || 'delivered';
+  const icon = status === 'delivered' ? '✓' : '✗';
+  const label = status === 'delivered' ? '已写入剪贴板' : '写入失败';
+  let html = `<div class="receive-status status-${status}">${icon} ${label}</div>`;
+  if (item.reason) {
+    html += `<div class="delivery-reason">${escapeHtml(item.reason)}</div>`;
+  }
+  return html;
+}
+
 function renderHistory() {
   const list = $('#historyList');
 
@@ -201,8 +258,20 @@ function renderHistory() {
       ? `<div class="history-content">${escapeHtml(item.content || '')}</div>`
       : `<img class="history-content image-thumb" src="${item.content}" alt="图片">`;
 
+    const isSent = item.direction === 'sent';
+    const hasTargets = isSent && item.targets && item.targets.length > 0;
+    const hasDetails = hasTargets || (!isSent && (item.status || item.reason));
+    const isExpanded = expandedItems.has(item.id);
+
+    let detailHtml = '';
+    if (isSent) {
+      detailHtml = _renderSentTargets(item);
+    } else {
+      detailHtml = _renderReceivedStatus(item);
+    }
+
     return `
-      <div class="history-item" data-id="${item.id}">
+      <div class="history-item ${isExpanded ? 'expanded' : ''}" data-id="${item.id}">
         <div class="history-type-icon ${item.type}">
           ${isText ? 'T' : '🖼'}
         </div>
@@ -210,11 +279,13 @@ function renderHistory() {
           ${contentHtml}
           <div class="history-meta">
             <span class="history-direction ${item.direction}">
-              ${item.direction === 'sent' ? '发送' : '接收'}
+              ${isSent ? '发送' : '接收'}
             </span>
             <span>${escapeHtml(item.sourceDevice || '未知')}</span>
             <span>${timeStr}</span>
+            ${hasDetails ? `<button class="expand-toggle" data-id="${item.id}">${isExpanded ? '收起' : '详情'}</button>` : ''}
           </div>
+          ${hasDetails ? `<div class="history-item-expand ${isExpanded ? 'visible' : ''}">${detailHtml}</div>` : ''}
         </div>
         <div class="history-actions-inline">
           <button class="btn-icon apply-btn" title="应用到剪贴板" data-id="${item.id}">
@@ -231,6 +302,19 @@ function renderHistory() {
         </div>
       </div>`;
   }).join('');
+
+  list.querySelectorAll('.expand-toggle').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      if (expandedItems.has(id)) {
+        expandedItems.delete(id);
+      } else {
+        expandedItems.add(id);
+      }
+      renderHistory();
+    });
+  });
 
   list.querySelectorAll('.apply-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {

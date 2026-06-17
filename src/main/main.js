@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
 const os = require('os');
+const { v4: uuidv4 } = require('uuid');
 
 const DeviceDiscovery = require('./device-discovery');
 const { SyncServer, SyncClient } = require('./sync-network');
@@ -70,6 +71,107 @@ function cleanupAndQuit() {
   app.quit();
 }
 
+function sendToRenderer(channel, data) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, data);
+  }
+}
+
+function _broadcastDeviceUpdate(newName) {
+  const msg = {
+    type: 'device-update',
+    deviceId: discovery.getDeviceId(),
+    deviceName: newName
+  };
+  const payload = encryptionPassword
+    ? encrypt(msg, encryptionPassword)
+    : { encrypted: false, data: msg };
+  if (syncServer) syncServer.broadcast(payload);
+  if (syncClient) syncClient.send(payload);
+}
+
+function _handleDeviceUpdate(data) {
+  const deviceId = data.deviceId;
+  if (!deviceId || deviceId === discovery.getDeviceId()) return;
+  const devices = discovery.getDevices();
+  const device = devices.find(d => d.id === deviceId);
+  if (device && device.name !== data.deviceName) {
+    device.name = data.deviceName;
+    sendToRenderer('device-updated', device);
+  }
+}
+
+function _sendAck(clientInfo, messageId, status, reason) {
+  const ack = {
+    type: 'ack',
+    messageId,
+    status,
+    reason: reason || null,
+    deviceId: discovery.getDeviceId(),
+    deviceName: discovery.getDeviceName()
+  };
+  const payload = encryptionPassword
+    ? encrypt(ack, encryptionPassword)
+    : { encrypted: false, data: ack };
+
+  if (clientInfo && clientInfo.ws) {
+    try {
+      clientInfo.ws.send(JSON.stringify(payload));
+    } catch (e) {
+      // ignore
+    }
+  } else {
+    syncClient.send(payload);
+  }
+}
+
+function _doSyncSend(contentType, content, targetDeviceIds) {
+  const messageId = uuidv4();
+  const message = {
+    type: 'clipboard',
+    messageId,
+    contentType,
+    content,
+    sourceDeviceId: discovery.getDeviceId(),
+    sourceDeviceName: discovery.getDeviceName(),
+    timestamp: Date.now()
+  };
+
+  const payload = encryptionPassword
+    ? encrypt(message, encryptionPassword)
+    : { encrypted: false, data: message };
+
+  let deliveryResults = [];
+  if (targetDeviceIds && targetDeviceIds.length > 0) {
+    for (const deviceId of targetDeviceIds) {
+      const result = syncServer.sendToDevice(deviceId, payload);
+      deliveryResults.push(result);
+    }
+  } else {
+    deliveryResults = syncServer.broadcast(payload);
+  }
+
+  const targets = deliveryResults.map(r => ({
+    deviceId: r.deviceId,
+    deviceName: r.deviceName || r.deviceId.slice(0, 8),
+    status: r.sent ? 'sent' : 'failed',
+    reason: r.reason || null,
+    updatedAt: Date.now()
+  }));
+
+  const entry = syncHistory.add({
+    type: contentType,
+    content,
+    direction: 'sent',
+    sourceDevice: discovery.getDeviceName(),
+    messageId,
+    targets
+  });
+
+  sendToRenderer('history-updated', syncHistory.getAll());
+  return entry;
+}
+
 function setupIpc() {
   ipcMain.handle('get-devices', () => {
     return discovery ? discovery.getDevices() : [];
@@ -129,35 +231,7 @@ function setupIpc() {
     }
 
     if (!content) return false;
-
-    const message = {
-      type: 'clipboard',
-      contentType: type,
-      sourceDeviceId: discovery.getDeviceId(),
-      sourceDeviceName: discovery.getDeviceName(),
-      timestamp: Date.now()
-    };
-
-    const payload = encryptionPassword
-      ? encrypt({ ...message, content }, encryptionPassword)
-      : { encrypted: false, data: { ...message, content } };
-
-    if (targetDeviceIds && targetDeviceIds.length > 0) {
-      for (const deviceId of targetDeviceIds) {
-        syncServer.sendToDevice(deviceId, payload);
-      }
-    } else {
-      syncServer.broadcast(payload);
-    }
-
-    syncHistory.add({
-      type,
-      content,
-      direction: 'sent',
-      sourceDevice: discovery.getDeviceName()
-    });
-
-    sendToRenderer('history-updated', syncHistory.getAll());
+    _doSyncSend(type, content, targetDeviceIds);
     return true;
   });
 
@@ -182,65 +256,76 @@ function setupIpc() {
   });
 }
 
-function sendToRenderer(channel, data) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(channel, data);
-  }
-}
-
-function _broadcastDeviceUpdate(newName) {
-  const msg = {
-    type: 'device-update',
-    deviceId: discovery.getDeviceId(),
-    deviceName: newName
-  };
-  const payload = encryptionPassword
-    ? encrypt(msg, encryptionPassword)
-    : { encrypted: false, data: msg };
-  if (syncServer) syncServer.broadcast(payload);
-  if (syncClient) syncClient.send(payload);
-}
-
-function _handleDeviceUpdate(data) {
-  const deviceId = data.deviceId;
-  if (!deviceId || deviceId === discovery.getDeviceId()) return;
-  const devices = discovery.getDevices();
-  const device = devices.find(d => d.id === deviceId);
-  if (device && device.name !== data.deviceName) {
-    device.name = data.deviceName;
-    sendToRenderer('device-updated', device);
-  }
-}
-
 function handleIncomingMessage(message, clientInfo) {
   let data;
   try {
     data = decrypt(message, encryptionPassword);
   } catch (e) {
-    console.error('Decryption failed - password mismatch?');
+    if (clientInfo && data?.messageId) {
+      _sendAck(clientInfo, data.messageId, 'failed', '解密失败：密码不匹配');
+    }
     return;
   }
 
   if (data.type === 'clipboard') {
-    if (data.contentType === 'text') {
-      skipNextClipboard = true;
-      clipboardMonitor.setText(data.content);
-    } else if (data.contentType === 'image') {
-      skipNextClipboard = true;
-      clipboardMonitor.setImage(data.content);
+    let applyStatus = 'delivered';
+    let applyReason = null;
+
+    try {
+      if (data.contentType === 'text') {
+        skipNextClipboard = true;
+        clipboardMonitor.setText(data.content);
+      } else if (data.contentType === 'image') {
+        skipNextClipboard = true;
+        clipboardMonitor.setImage(data.content);
+      }
+    } catch (e) {
+      applyStatus = 'failed';
+      applyReason = `写入剪贴板失败: ${e.message}`;
     }
+
+    _sendAck(clientInfo, data.messageId, applyStatus, applyReason);
 
     const entry = syncHistory.add({
       type: data.contentType,
       content: data.content,
       direction: 'received',
-      sourceDevice: data.sourceDeviceName
+      sourceDevice: data.sourceDeviceName,
+      sourceDeviceId: data.sourceDeviceId,
+      messageId: data.messageId,
+      status: applyStatus,
+      reason: applyReason
     });
 
     sendToRenderer('history-updated', syncHistory.getAll());
     sendToRenderer('clipboard-updated', entry);
+
+  } else if (data.type === 'ack') {
+    _handleAck(data);
+
   } else if (data.type === 'device-update') {
     _handleDeviceUpdate(data);
+  }
+}
+
+function _handleAck(ackData) {
+  const messageId = ackData.messageId;
+  if (!messageId) return;
+
+  for (const item of syncHistory.items) {
+    if (item.messageId === messageId && item.direction === 'sent') {
+      const deviceId = ackData.deviceId;
+      const updated = syncHistory.updateTargetStatus(
+        item.id,
+        deviceId,
+        ackData.status || 'delivered',
+        ackData.reason || undefined
+      );
+      if (updated) {
+        sendToRenderer('history-updated', syncHistory.getAll());
+        return;
+      }
+    }
   }
 }
 
@@ -273,34 +358,7 @@ app.whenReady().then(async () => {
       skipNextClipboard = false;
       return;
     }
-    const message = {
-      type: 'clipboard',
-      contentType: 'text',
-      content: text,
-      sourceDeviceId: discovery.getDeviceId(),
-      sourceDeviceName: discovery.getDeviceName(),
-      timestamp: Date.now()
-    };
-
-    const payload = encryptionPassword
-      ? encrypt(message, encryptionPassword)
-      : { encrypted: false, data: message };
-
-    if (syncTargetDeviceIds && syncTargetDeviceIds.length > 0) {
-      for (const deviceId of syncTargetDeviceIds) {
-        syncServer.sendToDevice(deviceId, payload);
-      }
-    } else {
-      syncServer.broadcast(payload);
-    }
-
-    syncHistory.add({
-      type: 'text',
-      content: text,
-      direction: 'sent',
-      sourceDevice: discovery.getDeviceName()
-    });
-    sendToRenderer('history-updated', syncHistory.getAll());
+    _doSyncSend('text', text, syncTargetDeviceIds);
   };
 
   clipboardMonitor.onImage = (dataUrl) => {
@@ -308,34 +366,7 @@ app.whenReady().then(async () => {
       skipNextClipboard = false;
       return;
     }
-    const message = {
-      type: 'clipboard',
-      contentType: 'image',
-      content: dataUrl,
-      sourceDeviceId: discovery.getDeviceId(),
-      sourceDeviceName: discovery.getDeviceName(),
-      timestamp: Date.now()
-    };
-
-    const payload = encryptionPassword
-      ? encrypt(message, encryptionPassword)
-      : { encrypted: false, data: message };
-
-    if (syncTargetDeviceIds && syncTargetDeviceIds.length > 0) {
-      for (const deviceId of syncTargetDeviceIds) {
-        syncServer.sendToDevice(deviceId, payload);
-      }
-    } else {
-      syncServer.broadcast(payload);
-    }
-
-    syncHistory.add({
-      type: 'image',
-      content: dataUrl,
-      direction: 'sent',
-      sourceDevice: discovery.getDeviceName()
-    });
-    sendToRenderer('history-updated', syncHistory.getAll());
+    _doSyncSend('image', dataUrl, syncTargetDeviceIds);
   };
 
   discovery.onDeviceOnline = (device) => {
