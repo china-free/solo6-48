@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClipSync</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <div class="header-left">
+        <div class="logo">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="8" y="2" width="12" height="12" rx="2"/>
+            <path d="M16 6v12a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h10z"/>
+          </svg>
+        </div>
+        <h1>ClipSync</h1>
+        <span class="status-badge" id="statusBadge">连接中...</span>
+      </div>
+      <nav class="tab-nav">
+        <button class="tab-btn active" data-tab="devices">设备</button>
+        <button class="tab-btn" data-tab="history">历史</button>
+        <button class="tab-btn" data-tab="settings">设置</button>
+      </nav>
+    </header>
+
+    <main class="tab-content">
+      <section id="tab-devices" class="tab-panel active">
+        <div class="section-header">
+          <h2>局域网设备</h2>
+          <span class="device-count" id="deviceCount">0 台设备</span>
+        </div>
+        <div id="deviceList" class="device-list">
+          <div class="empty-state">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4">
+              <rect x="2" y="3" width="20" height="14" rx="2"/>
+              <path d="M8 21h8M12 17v4"/>
+            </svg>
+            <p>正在搜索局域网设备...</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-history" class="tab-panel">
+        <div class="section-header">
+          <h2>同步历史</h2>
+          <div class="history-actions">
+            <button class="btn btn-ghost" id="clearHistoryBtn">清空</button>
+          </div>
+        </div>
+        <div id="historyList" class="history-list">
+          <div class="empty-state">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 6v6l4 2"/>
+            </svg>
+            <p>暂无同步记录</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-settings" class="tab-panel">
+        <div class="settings-group">
+          <h3>设备信息</h3>
+          <div class="setting-row">
+            <label>设备ID</label>
+            <span class="setting-value" id="settingDeviceId">-</span>
+          </div>
+          <div class="setting-row">
+            <label>设备名称</label>
+            <input type="text" class="setting-input" id="settingDeviceName" placeholder="输入设备名称">
+          </div>
+          <button class="btn btn-primary" id="saveDeviceNameBtn">保存</button>
+        </div>
+
+        <div class="settings-group">
+          <h3>加密设置</h3>
+          <div class="setting-row">
+            <label>启用密码加密</label>
+            <label class="toggle">
+              <input type="checkbox" id="enableEncryption">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="setting-row" id="passwordRow" style="display:none">
+            <label>加密密码</label>
+            <input type="password" class="setting-input" id="encryptionPassword" placeholder="输入加密密码">
+          </div>
+          <button class="btn btn-primary" id="savePasswordBtn" style="display:none">保存密码</button>
+          <p class="setting-hint" id="encryptionHint">所有设备需设置相同密码才能正常同步</p>
+        </div>
+
+        <div class="settings-group">
+          <h3>选择性同步</h3>
+          <p class="setting-hint">勾选目标设备，复制内容将仅同步到选中的设备</p>
+          <div id="syncTargetList" class="sync-target-list">
+            <p class="empty-hint">暂无在线设备</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>
