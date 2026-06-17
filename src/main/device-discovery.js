@@ -16,9 +16,29 @@ class DeviceDiscovery {
     this.deviceName = os.hostname();
     this.onDeviceOnline = null;
     this.onDeviceOffline = null;
+    this.onDeviceUpdated = null;
   }
 
   start() {
+    this._publishService();
+
+    this.browser = this.bonjour.find({ type: SERVICE_TYPE }, (service) => {
+      this._handleServiceUp(service);
+    });
+
+    this.browser.on('down', (service) => {
+      this._handleServiceDown(service);
+    });
+
+    this.browser.on('update', (service) => {
+      this._handleServiceUpdate(service);
+    });
+  }
+
+  _publishService() {
+    if (this.service) {
+      this.service.stop();
+    }
     this.service = this.bonjour.publish({
       name: `${this.deviceName}-${this.deviceId.slice(0, 8)}`,
       type: SERVICE_TYPE,
@@ -27,14 +47,6 @@ class DeviceDiscovery {
         deviceid: this.deviceId,
         devicename: this.deviceName
       }
-    });
-
-    this.browser = this.bonjour.find({ type: SERVICE_TYPE }, (service) => {
-      this._handleServiceUp(service);
-    });
-
-    this.browser.on('down', (service) => {
-      this._handleServiceDown(service);
     });
   }
 
@@ -76,6 +88,21 @@ class DeviceDiscovery {
     }
   }
 
+  _handleServiceUpdate(service) {
+    if (!service.txt || !service.txt.deviceid) return;
+    if (service.txt.deviceid === this.deviceId) return;
+
+    const deviceId = service.txt.deviceid;
+    const device = this.devices.get(deviceId);
+    if (device) {
+      const oldName = device.name;
+      device.name = service.txt.devicename || service.name;
+      if (this.onDeviceUpdated && oldName !== device.name) {
+        this.onDeviceUpdated(device);
+      }
+    }
+  }
+
   getDevices() {
     return Array.from(this.devices.values());
   }
@@ -89,7 +116,11 @@ class DeviceDiscovery {
   }
 
   setDeviceName(name) {
+    if (!name || name === this.deviceName) return;
     this.deviceName = name;
+    if (this.service) {
+      this._publishService();
+    }
   }
 
   stop() {

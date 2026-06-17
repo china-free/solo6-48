@@ -1,7 +1,5 @@
 const { clipboard, nativeImage } = require('electron');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+const crypto = require('crypto');
 
 const POLL_INTERVAL = 500;
 
@@ -10,6 +8,7 @@ class ClipboardMonitor {
     this.intervalId = null;
     this.lastText = '';
     this.lastImageHash = '';
+    this.lastImageFormat = 'png';
     this.onText = null;
     this.onImage = null;
     this._running = false;
@@ -36,33 +35,26 @@ class ClipboardMonitor {
   _poll() {
     try {
       const text = clipboard.readText() || '';
-      if (text !== this.lastText && text.length > 0) {
+      const image = clipboard.readImage();
+      const imageEmpty = image.isEmpty();
+      const imageHash = imageEmpty ? '' : this._hashImage(image);
+
+      const textChanged = text !== this.lastText && text.length > 0;
+      const imageChanged = !imageEmpty && imageHash !== this.lastImageHash;
+
+      if (imageChanged) {
+        this.lastImageHash = imageHash;
         this.lastText = text;
-        const image = clipboard.readImage();
-        if (!image.isEmpty()) {
-          const hash = this._hashImage(image);
-          if (hash !== this.lastImageHash) {
-            this.lastImageHash = hash;
-            if (this.onImage) {
-              this.onImage(image.toDataURL());
-            }
-          }
-        } else {
-          if (this.onText) {
-            this.onText(text);
-          }
+        if (this.onImage) {
+          this.onImage(image.toDataURL());
         }
-      } else {
-        const image = clipboard.readImage();
-        if (!image.isEmpty()) {
-          const hash = this._hashImage(image);
-          if (hash !== this.lastImageHash) {
-            this.lastImageHash = hash;
-            this.lastText = text;
-            if (this.onImage) {
-              this.onImage(image.toDataURL());
-            }
-          }
+        return;
+      }
+
+      if (textChanged) {
+        this.lastText = text;
+        if (this.onText) {
+          this.onText(text);
         }
       }
     } catch (e) {
@@ -72,7 +64,9 @@ class ClipboardMonitor {
 
   _hashImage(image) {
     const size = image.getSize();
-    return `${size.width}x${size.height}`;
+    const pngBuffer = image.toPNG();
+    const dataHash = crypto.createHash('md5').update(pngBuffer).digest('hex').slice(0, 16);
+    return `${size.width}x${size.height}-${pngBuffer.length}-${dataHash}`;
   }
 
   setText(text) {
@@ -83,6 +77,7 @@ class ClipboardMonitor {
   setImage(dataUrl) {
     const image = nativeImage.createFromDataURL(dataUrl);
     this.lastImageHash = this._hashImage(image);
+    this.lastText = clipboard.readText() || '';
     clipboard.writeImage(image);
   }
 }

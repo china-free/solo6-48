@@ -94,7 +94,15 @@ function setupIpc() {
   });
 
   ipcMain.handle('set-device-name', (_e, name) => {
-    if (discovery) discovery.setDeviceName(name);
+    if (discovery) {
+      const oldName = discovery.getDeviceName();
+      discovery.setDeviceName(name);
+      if (syncClient) syncClient.setIdentity(discovery.getDeviceId(), name);
+      const newName = discovery.getDeviceName();
+      if (oldName !== newName) {
+        _broadcastDeviceUpdate(newName);
+      }
+    }
     return true;
   });
 
@@ -180,7 +188,31 @@ function sendToRenderer(channel, data) {
   }
 }
 
-function handleIncomingClipboard(message, clientInfo) {
+function _broadcastDeviceUpdate(newName) {
+  const msg = {
+    type: 'device-update',
+    deviceId: discovery.getDeviceId(),
+    deviceName: newName
+  };
+  const payload = encryptionPassword
+    ? encrypt(msg, encryptionPassword)
+    : { encrypted: false, data: msg };
+  if (syncServer) syncServer.broadcast(payload);
+  if (syncClient) syncClient.send(payload);
+}
+
+function _handleDeviceUpdate(data) {
+  const deviceId = data.deviceId;
+  if (!deviceId || deviceId === discovery.getDeviceId()) return;
+  const devices = discovery.getDevices();
+  const device = devices.find(d => d.id === deviceId);
+  if (device && device.name !== data.deviceName) {
+    device.name = data.deviceName;
+    sendToRenderer('device-updated', device);
+  }
+}
+
+function handleIncomingMessage(message, clientInfo) {
   let data;
   try {
     data = decrypt(message, encryptionPassword);
@@ -189,25 +221,27 @@ function handleIncomingClipboard(message, clientInfo) {
     return;
   }
 
-  if (data.type !== 'clipboard') return;
+  if (data.type === 'clipboard') {
+    if (data.contentType === 'text') {
+      skipNextClipboard = true;
+      clipboardMonitor.setText(data.content);
+    } else if (data.contentType === 'image') {
+      skipNextClipboard = true;
+      clipboardMonitor.setImage(data.content);
+    }
 
-  if (data.contentType === 'text') {
-    skipNextClipboard = true;
-    clipboardMonitor.setText(data.content);
-  } else if (data.contentType === 'image') {
-    skipNextClipboard = true;
-    clipboardMonitor.setImage(data.content);
+    const entry = syncHistory.add({
+      type: data.contentType,
+      content: data.content,
+      direction: 'received',
+      sourceDevice: data.sourceDeviceName
+    });
+
+    sendToRenderer('history-updated', syncHistory.getAll());
+    sendToRenderer('clipboard-updated', entry);
+  } else if (data.type === 'device-update') {
+    _handleDeviceUpdate(data);
   }
-
-  const entry = syncHistory.add({
-    type: data.contentType,
-    content: data.content,
-    direction: 'received',
-    sourceDevice: data.sourceDeviceName
-  });
-
-  sendToRenderer('history-updated', syncHistory.getAll());
-  sendToRenderer('clipboard-updated', entry);
 }
 
 app.whenReady().then(async () => {
@@ -227,11 +261,11 @@ app.whenReady().then(async () => {
   discovery.port = actualPort;
 
   syncServer.onMessage = (msg, clientInfo) => {
-    handleIncomingClipboard(msg, clientInfo);
+    handleIncomingMessage(msg, clientInfo);
   };
 
   syncClient.onMessage = (msg) => {
-    handleIncomingClipboard(msg, null);
+    handleIncomingMessage(msg, null);
   };
 
   clipboardMonitor.onText = (text) => {
@@ -312,6 +346,10 @@ app.whenReady().then(async () => {
   discovery.onDeviceOffline = (device) => {
     sendToRenderer('device-offline', device);
     syncClient.disconnect(device.host, device.port);
+  };
+
+  discovery.onDeviceUpdated = (device) => {
+    sendToRenderer('device-updated', device);
   };
 
   discovery.start();

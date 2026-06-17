@@ -91,6 +91,15 @@ function setupEventListeners() {
     renderSyncTargets();
   });
 
+  clipSync.onDeviceUpdated((device) => {
+    const idx = devices.findIndex(d => d.id === device.id);
+    if (idx >= 0) {
+      devices[idx] = { ...devices[idx], ...device };
+      renderDevices();
+      renderSyncTargets();
+    }
+  });
+
   clipSync.onHistoryUpdated((items) => {
     history = items;
     renderHistory();

@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('clipSync', {
 
   onDeviceOnline: (callback) => ipcRenderer.on('device-online', (_e, data) => callback(data)),
   onDeviceOffline: (callback) => ipcRenderer.on('device-offline', (_e, data) => callback(data)),
+  onDeviceUpdated: (callback) => ipcRenderer.on('device-updated', (_e, data) => callback(data)),
   onHistoryUpdated: (callback) => ipcRenderer.on('history-updated', (_e, data) => callback(data)),
   onClipboardUpdated: (callback) => ipcRenderer.on('clipboard-updated', (_e, data) => callback(data))
 });
